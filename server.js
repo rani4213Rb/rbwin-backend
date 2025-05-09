@@ -4,9 +4,17 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const http = require('http');
+const { Server } = require('socket.io');
 
 dotenv.config();
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+  },
+});
 
 app.use(cors());
 app.use(express.json());
@@ -24,6 +32,7 @@ const userSchema = new mongoose.Schema({
   vipLevel: { type: Number, default: 1 },
   referralCode: String,
   referredBy: String,
+  winStreak: { type: Number, default: 0 }, // For WinStreak Bonus
 });
 
 const User = mongoose.model('User', userSchema);
@@ -38,12 +47,13 @@ const predictionSchema = new mongoose.Schema({
 
 const Prediction = mongoose.model('Prediction', predictionSchema);
 
-// Transaction Schema (Withdraw/Recharge)
+// Transaction Schema
 const transactionSchema = new mongoose.Schema({
   userId: String,
   type: String, // 'withdraw' or 'recharge'
   amount: Number,
-  method: String, // 'UPI', 'Paytm'
+  method: String, // 'UPI'
+  transactionId: String, // Add this field for recharge
   status: String, // 'pending', 'completed', 'failed'
   timestamp: { type: Date, default: Date.now },
 });
@@ -63,6 +73,25 @@ const authenticateToken = (req, res, next) => {
     res.status(403).json({ message: 'Invalid Token' });
   }
 };
+
+// Real-Time Timer with WebSocket
+let timer = 60;
+setInterval(() => {
+  timer = timer > 0 ? timer - 1 : 60;
+  io.emit('timer', timer);
+  if (timer === 0) {
+    const colors = ['red', 'green', 'blue'];
+    const result = colors[Math.floor(Math.random() * colors.length)];
+    io.emit('result', result);
+  }
+}, 1000);
+
+io.on('connection', (socket) => {
+  console.log('A user connected');
+  socket.on('disconnect', () => {
+    console.log('User disconnected');
+  });
+});
 
 // Routes
 app.get('/', (req, res) => {
@@ -97,11 +126,24 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/predictions', authenticateToken, async (req, res) => {
   const { color } = req.body;
   const userId = req.user.userId;
-  const colors = ['red', 'green', 'blue'];
-  const result = colors[Math.floor(Math.random() * colors.length)];
-  const prediction = new Prediction({ userId, color, result });
+  const prediction = new Prediction({ userId, color, result: 'pending' });
   await prediction.save();
-  res.json({ success: true, result });
+
+  socket.on('result', async (gameResult) => {
+    await Prediction.updateOne({ _id: prediction._id }, { result: gameResult });
+    const user = await User.findById(userId);
+    if (color === gameResult) {
+      await User.findByIdAndUpdate(userId, { $inc: { winStreak: 1 } });
+      if (user.winStreak + 1 === 3) {
+        await User.findByIdAndUpdate(userId, { $inc: { balance: 50 }, winStreak: 0 });
+        io.to(userId).emit('bonus', 'WinStreak Bonus: ₹50');
+      }
+    } else {
+      await User.findByIdAndUpdate(userId, { winStreak: 0 });
+    }
+  });
+
+  res.json({ success: true, message: 'Prediction saved, waiting for result' });
 });
 
 // Get Game History
@@ -121,17 +163,26 @@ app.post('/api/bigsmall', authenticateToken, async (req, res) => {
 // Dashboard Data
 app.get('/api/dashboard/:userId', authenticateToken, async (req, res) => {
   const user = await User.findById(req.params.userId);
-  res.json({ balance: user.balance, vipLevel: user.vipLevel });
+  res.json({ balance: user.balance, vipLevel: user.vipLevel, winStreak: user.winStreak });
 });
 
 // Recharge
 app.post('/api/recharge', authenticateToken, async (req, res) => {
-  const { amount, method } = req.body;
+  const { amount, method, transactionId } = req.body;
   const userId = req.user.userId;
-  const transaction = new Transaction({ userId, type: 'recharge', amount, method, status: 'completed' });
+  const user = await User.findById(userId);
+  const transactionCount = await Transaction.countDocuments({ userId, type: 'recharge' });
+  let bonus = 0;
+  if (transactionCount === 0) {
+    bonus = amount * 0.1; // 10% bonus on first recharge
+  }
+  const transaction = new Transaction({ userId, type: 'recharge', amount, method, transactionId, status: 'pending' });
   await transaction.save();
-  await User.findByIdAndUpdate(userId, { $inc: { balance: amount } });
-  res.json({ success: true, message: 'Recharge successful' });
+  await User.findByIdAndUpdate(userId, { $inc: { balance: amount + bonus } });
+  if (bonus > 0) {
+    io.to(userId).emit('bonus', `First Deposit Bonus: ₹${bonus}`);
+  }
+  res.json({ success: true, message: 'Recharge successful, pending verification' });
 });
 
 // Withdraw
@@ -155,9 +206,21 @@ app.post('/api/referral', authenticateToken, async (req, res) => {
   if (!referrer) return res.status(400).json({ message: 'Invalid referral code' });
 
   await User.findByIdAndUpdate(userId, { referredBy: referralCode });
-  await User.findByIdAndUpdate(referrer._id, { $inc: { balance: 50 } }); // Reward referrer
+  await User.findByIdAndUpdate(referrer._id, { $inc: { balance: 50 } });
   res.json({ success: true, message: 'Referral successful' });
 });
 
+// Profile
+app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
+  const user = await User.findById(req.params.userId);
+  res.json({ username: user.username, balance: user.balance, vipLevel: user.vipLevel, referralCode: user.referralCode });
+});
+
+// Leaderboard
+app.get('/api/leaderboard', async (req, res) => {
+  const topUsers = await User.find().sort({ balance: -1 }).limit(10);
+  res.json(topUsers.map(user => ({ username: user.username, balance: user.balance })));
+});
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
