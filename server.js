@@ -28,12 +28,10 @@ app.use('/api/results', resultRoutes);
 // Connect MongoDB and Start Server
 mongoose.connect(process.env.MONGO_URI).then(() => {
   console.log('MongoDB Connected');
-
   server.listen(5000, () => {
     console.log('Server running on port 5000');
     startResultGeneration(); // Auto result system start
   });
-
 }).catch(err => {
   console.error('MongoDB Connection Error:', err);
 });
