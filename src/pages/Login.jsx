@@ -1,13 +1,16 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 const Login = () => {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const navigate = useNavigate();
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    // Backend API call बाद में जोड़ा जाएगा
+    // Backend API yahan add karni hogi
     alert(`Phone: ${phone}, Password: ${password}`);
+    navigate("/bet");
   };
 
   return (
