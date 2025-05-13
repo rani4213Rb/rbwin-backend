@@ -1,3 +1,4 @@
+// src/pages/Login.jsx
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -8,9 +9,9 @@ const Login = () => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    // Backend API yahan add karni hogi
+    // Yaha aap backend API se login ka call laga sakte ho
     alert(`Phone: ${phone}, Password: ${password}`);
-    navigate("/bet");
+    navigate("/bet"); // Redirect to bet page
   };
 
   return (
